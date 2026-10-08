@@ -1,138 +1,171 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import MapPicker from "./MapPicker";
 
-const { locationToAddressMock, reverseGoogleLocationMock } = vi.hoisted(() => ({
-  locationToAddressMock: vi.fn(),
+const { reverseGoogleLocationMock, searchNearbyPlacesMock, createPropertyAnalysisMock } = vi.hoisted(() => ({
   reverseGoogleLocationMock: vi.fn(),
+  searchNearbyPlacesMock: vi.fn(),
+  createPropertyAnalysisMock: vi.fn(),
 }));
-vi.mock("@arcgis/core/config.js", () => ({ default: {} }));
-vi.mock("@arcgis/core/rest/locator.js", () => ({ locationToAddress: locationToAddressMock }));
-vi.mock("@arcgis/core/Graphic.js", () => ({ default: class Graphic { constructor(value) { Object.assign(this, value); } } }));
-vi.mock("@arcgis/core/geometry/Point.js", () => ({ default: class Point { constructor(value) { Object.assign(this, value); } } }));
-vi.mock("@arcgis/core/layers/GraphicsLayer.js", () => ({
-  default: class GraphicsLayer { add = vi.fn(); removeAll = vi.fn(); },
-}));
-vi.mock("@arcgis/map-components/components/arcgis-map", () => ({}));
-vi.mock("@arcgis/map-components/components/arcgis-zoom", () => ({}));
-vi.mock("@arcgis/map-components/components/arcgis-search", () => ({}));
-vi.mock("@arcgis/map-components/components/arcgis-fullscreen", () => ({}));
-vi.mock("@arcgis/map-components/components/arcgis-basemap-toggle", () => ({}));
+
 vi.mock("../googleMaps", () => ({
   googleMapsApiKey: "test-google-key",
   reverseGoogleLocation: reverseGoogleLocationMock,
+  searchNearbyPlaces: searchNearbyPlacesMock,
 }));
+vi.mock("../api", () => ({ createPropertyAnalysis: createPropertyAnalysisMock }));
 vi.mock("./GoogleMapView", () => ({
-  default: ({ location, onPointSelect }) => <div data-testid="google-map-view">
-    {location.latitude},{location.longitude}
-    <button type="button" onClick={() => onPointSelect({ latitude: 39.273808, longitude: -76.710079 })}>Mock Google map click</button>
-  </div>,
+  default: ({ location, pickMode, boundaryMode, onPointSelect, onBoundaryVertexAdd, selectedGisFeatureId }) => (
+    <div data-testid="google-map-view" data-selected-gis-feature={selectedGisFeatureId || ""}>
+      {location.latitude},{location.longitude},{pickMode ? "picking" : "idle"},{boundaryMode ? "boundary" : "no-boundary"}
+      <button type="button" onClick={() => onPointSelect({ latitude: 39.273808, longitude: -76.710079 })}>Mock Google map click</button>
+      <button type="button" onClick={() => onBoundaryVertexAdd({ lat: 15.1525, lng: 76.9026 })}>Mock boundary vertex 1</button>
+      <button type="button" onClick={() => onBoundaryVertexAdd({ lat: 15.1525, lng: 76.9029 })}>Mock boundary vertex 2</button>
+      <button type="button" onClick={() => onBoundaryVertexAdd({ lat: 15.1522, lng: 76.9027 })}>Mock boundary vertex 3</button>
+    </div>
+  ),
 }));
 
-beforeAll(() => {
-  if (!customElements.get("arcgis-map")) {
-    customElements.define("arcgis-map", class extends HTMLElement {
-      constructor() {
-        super();
-        this.map = { add: vi.fn(), remove: vi.fn() };
-        this.constraints = {};
-      }
-      viewOnReady() { return Promise.resolve(); }
-      goTo = vi.fn(() => Promise.resolve());
-    });
-  }
-});
-
-describe("MapPicker", () => {
+describe("Google-only MapPicker", () => {
   beforeEach(() => {
-    locationToAddressMock.mockReset();
-    locationToAddressMock.mockResolvedValue({
-      address: "1 Main Street",
-      attributes: { Region: "Karnataka", CntryName: "India" },
-    });
-    reverseGoogleLocationMock.mockReset();
-    reverseGoogleLocationMock.mockResolvedValue({
+    reverseGoogleLocationMock.mockReset().mockResolvedValue({
       address: "204 Garden Ridge Road",
       state: "Maryland",
       country: "United States",
       latitude: "39.273808",
       longitude: "-76.710079",
+      addressResolution: "reverse_geocode",
     });
+    searchNearbyPlacesMock.mockReset().mockResolvedValue([]);
+    createPropertyAnalysisMock.mockReset().mockResolvedValue({ analysis_id: 1, radius_m: 500, status: "complete", directions: {} });
   });
 
-  it("ignores ordinary map clicks and accepts exactly one click in pick mode", async () => {
-    const onLocationChange = vi.fn();
-    const { container } = render(<MapPicker location={{ latitude: "", longitude: "" }} onLocationChange={onLocationChange} />);
-    const map = container.querySelector("arcgis-map");
-    await screen.findByRole("button", { name: "Select on map" });
-
-    map.dispatchEvent(new CustomEvent("arcgisViewClick", { detail: { mapPoint: { latitude: 10, longitude: 20 } } }));
-    expect(onLocationChange).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Select on map" }));
-    map.dispatchEvent(new CustomEvent("arcgisViewClick", { detail: { mapPoint: { latitude: 10, longitude: 20 } } }));
-    await waitFor(() => expect(locationToAddressMock).toHaveBeenCalledOnce());
-    expect(onLocationChange).toHaveBeenLastCalledWith(expect.objectContaining({ latitude: "10.000000", longitude: "20.000000", country: "India" }));
-
-    map.dispatchEvent(new CustomEvent("arcgisViewClick", { detail: { mapPoint: { latitude: 30, longitude: 40 } } }));
-    expect(locationToAddressMock).toHaveBeenCalledOnce();
-  });
-
-  it("keeps selected coordinates when reverse geocoding fails", async () => {
-    locationToAddressMock.mockRejectedValue(new Error("No match"));
-    const onLocationChange = vi.fn();
-    const { container } = render(<MapPicker location={{ latitude: "", longitude: "" }} onLocationChange={onLocationChange} />);
-    await screen.findByRole("button", { name: "Select on map" });
-    fireEvent.click(screen.getByRole("button", { name: "Select on map" }));
-    container.querySelector("arcgis-map").dispatchEvent(new CustomEvent("arcgisViewClick", { detail: { mapPoint: { latitude: 10, longitude: 20 } } }));
-
-    expect(await screen.findByText(/no address was found/i)).toBeInTheDocument();
-    expect(onLocationChange).toHaveBeenCalledWith(expect.objectContaining({ latitude: "10.000000", address: "" }));
-  });
-
-  it("preserves the previous selection when location permission is denied", async () => {
-    const getCurrentPosition = vi.fn((success, failure) => failure({ code: 1 }));
-    Object.defineProperty(navigator, "geolocation", { configurable: true, value: { getCurrentPosition } });
-    const onLocationChange = vi.fn();
-    render(<MapPicker location={{ latitude: "12.000000", longitude: "77.000000" }} onLocationChange={onLocationChange} />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Use current location" }));
-
-    expect(await screen.findByText(/permission was denied/i)).toBeInTheDocument();
-    expect(onLocationChange).not.toHaveBeenCalled();
-  });
-
-  it("moves the map to coordinates loaded from a saved property", async () => {
-    const { container } = render(<MapPicker location={{ latitude: "12.971599", longitude: "77.594566" }} onLocationChange={vi.fn()} />);
-    const map = container.querySelector("arcgis-map");
-
-    await waitFor(() => expect(map.goTo).toHaveBeenCalledWith({ center: [77.594566, 12.971599], zoom: 19 }));
-  });
-
-  it("switches to Google while preserving the selected coordinates", async () => {
-    render(<MapPicker location={{ latitude: "12.971599", longitude: "77.594566" }} onLocationChange={vi.fn()} />);
-
-    fireEvent.click(screen.getByRole("tab", { name: "Google" }));
-
-    expect(screen.getByRole("tab", { name: "Google" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByTestId("google-map-view")).toHaveTextContent("12.971599,77.594566");
-  });
-
-  it("falls back to Esri address details when Google reverse geocoding fails", async () => {
-    reverseGoogleLocationMock.mockRejectedValue(new Error("REQUEST_DENIED"));
+  it("shows only Google Maps and resolves a selected point", async () => {
     const onLocationChange = vi.fn();
     render(<MapPicker location={{ latitude: "", longitude: "" }} onLocationChange={onLocationChange} />);
-    fireEvent.click(screen.getByRole("tab", { name: "Google" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Select on map" }));
+
+    expect(screen.getByText("Google Maps")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Pick location on map" }));
+    expect(screen.getByTestId("google-map-view")).toHaveTextContent("picking");
     fireEvent.click(screen.getByRole("button", { name: "Mock Google map click" }));
 
-    expect(await screen.findByText(/resolved with the Esri fallback/i)).toBeInTheDocument();
-    expect(onLocationChange).toHaveBeenLastCalledWith(expect.objectContaining({
-      address: "1 Main Street",
+    await waitFor(() => expect(reverseGoogleLocationMock).toHaveBeenCalledWith({ latitude: 39.273808, longitude: -76.710079 }));
+    expect(onLocationChange).toHaveBeenLastCalledWith(expect.objectContaining({ address: "204 Garden Ridge Road" }));
+  });
+
+  it("keeps selected coordinates when Google reverse geocoding fails", async () => {
+    reverseGoogleLocationMock.mockRejectedValue(new Error("No match"));
+    const onLocationChange = vi.fn();
+    render(<MapPicker location={{ latitude: "", longitude: "" }} onLocationChange={onLocationChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Mock Google map click" }));
+
+    expect(await screen.findByText(/could not find an address/i)).toBeInTheDocument();
+    expect(onLocationChange).toHaveBeenCalledWith(expect.objectContaining({ latitude: "39.273808", address: "" }));
+  });
+
+  it("labels an address approximated from the nearest Google place", async () => {
+    reverseGoogleLocationMock.mockResolvedValue({
+      address: "Nearest place address",
       state: "Karnataka",
       country: "India",
-      latitude: "39.273808",
-      longitude: "-76.710079",
-    }));
+      latitude: "15.152685",
+      longitude: "76.902695",
+      addressResolution: "nearby_place",
+    });
+    const onLocationChange = vi.fn();
+    render(<MapPicker location={{ latitude: "", longitude: "" }} onLocationChange={onLocationChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Mock Google map click" }));
+
+    expect(await screen.findByText(/approximated from the nearest Google place/i)).toBeInTheDocument();
+    expect(onLocationChange).toHaveBeenLastCalledWith(expect.not.objectContaining({ addressResolution: expect.anything() }));
+  });
+
+  it("preserves the previous selection when location permission is denied", () => {
+    Object.defineProperty(navigator, "geolocation", {
+      configurable: true,
+      value: { getCurrentPosition: vi.fn((success, failure) => failure({ code: 1 })) },
+    });
+    const onLocationChange = vi.fn();
+    render(<MapPicker location={{ latitude: "12", longitude: "77" }} onLocationChange={onLocationChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Use current location" }));
+
+    expect(screen.getByText(/permission was denied/i)).toBeInTheDocument();
+    expect(onLocationChange).not.toHaveBeenCalled();
+  });
+
+  it("draws, finishes, and clears a GeoJSON property boundary", () => {
+    const onBoundaryChange = vi.fn();
+    const { rerender } = render(<MapPicker
+      location={{ latitude: "15.152382", longitude: "76.902736", boundary: null }}
+      onLocationChange={vi.fn()}
+      onBoundaryChange={onBoundaryChange}
+    />);
+    fireEvent.click(screen.getByRole("button", { name: "Draw boundary" }));
+    expect(screen.getByTestId("google-map-view")).toHaveTextContent("boundary");
+    fireEvent.click(screen.getByRole("button", { name: "Mock boundary vertex 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Mock boundary vertex 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Mock boundary vertex 3" }));
+    fireEvent.click(screen.getByRole("button", { name: "Finish boundary" }));
+    expect(onBoundaryChange).toHaveBeenCalledWith(expect.objectContaining({ type: "Polygon" }));
+    rerender(<MapPicker
+      location={{ latitude: "15.152382", longitude: "76.902736", boundary: { type: "Polygon", coordinates: [] } }}
+      onLocationChange={vi.fn()}
+      onBoundaryChange={onBoundaryChange}
+    />);
+    fireEvent.click(screen.getByRole("button", { name: "Clear boundary" }));
+    expect(onBoundaryChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it("runs Google Places and GIS analysis together with the selected radius and boundary centroid", async () => {
+    const onAnalysisChange = vi.fn();
+    const boundary = { type: "Polygon", coordinates: [[[76, 12], [78, 12], [78, 14], [76, 14], [76, 12]]] };
+    searchNearbyPlacesMock.mockResolvedValue([{ id: "place-1", name: "School", typeLabel: "School", category: "education", address: "Main Street", latitude: 13, longitude: 77, distanceMeters: 0, direction: "N", googleMapsUri: "" }]);
+    createPropertyAnalysisMock.mockResolvedValue({ analysis_id: 2, radius_m: 1000, status: "complete", directions: {} });
+    render(<MapPicker location={{ latitude: "13", longitude: "77", boundary }} propertyId={9} onAnalysisChange={onAnalysisChange} onLocationChange={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText("Search radius"), { target: { value: "1000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+
+    await waitFor(() => expect(searchNearbyPlacesMock).toHaveBeenCalledWith({ latitude: 13, longitude: 77 }, 1000));
+    expect(createPropertyAnalysisMock).toHaveBeenCalledWith(9, 1000);
+    expect(await screen.findByText("School")).toBeInTheDocument();
+    expect(onAnalysisChange).toHaveBeenCalledWith(expect.objectContaining({ analysis_id: 2 }));
+  });
+
+  it("shows Google results when GIS fails and reports a partial analysis", async () => {
+    createPropertyAnalysisMock.mockRejectedValue(new Error("GIS unavailable"));
+    searchNearbyPlacesMock.mockResolvedValue([{ id: "place-2", name: "Clinic", typeLabel: "Clinic", category: "healthcare", address: "Main Street", latitude: 13, longitude: 77, distanceMeters: 40, direction: "E", googleMapsUri: "" }]);
+    render(<MapPicker location={{ latitude: "13", longitude: "77", boundary: { type: "Polygon", coordinates: [[[76.99, 13], [77.01, 13], [77.01, 13.01], [76.99, 13]]] } }} propertyId={3} onLocationChange={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+    expect(await screen.findByText(/some data sources did not return results/i)).toBeInTheDocument();
+    expect(screen.getByText("Clinic")).toBeInTheDocument();
+    expect(screen.getByText(/GIS analysis: GIS unavailable/i)).toBeInTheDocument();
+  });
+
+  it("shows GIS results when Google Places fails", async () => {
+    searchNearbyPlacesMock.mockRejectedValue(new Error("Places unavailable"));
+    createPropertyAnalysisMock.mockResolvedValue({
+      analysis_id: 4, radius_m: 500, status: "complete",
+      directions: { E: { features: [{ id: "gis-E-0", type: "road", distance_m: 80, direction: "E", source: "mapbox_streets_v8", metrics: {}, geometry: { type: "Point", coordinates: [77, 13] } }] } },
+    });
+    function AnalysisHarness() {
+      const [analysis, setAnalysis] = useState(null);
+      return <MapPicker
+        location={{ latitude: "13", longitude: "77", boundary: { type: "Polygon", coordinates: [[[76.99, 13], [77.01, 13], [77.01, 13.01], [76.99, 13]]] } }}
+        propertyId={4}
+        analysis={analysis}
+        onAnalysisChange={setAnalysis}
+        onLocationChange={vi.fn()}
+      />;
+    }
+    render(<AnalysisHarness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+    expect(await screen.findByText("Road")).toBeInTheDocument();
+    expect(screen.getAllByText(/Google Places: Places unavailable/i)).not.toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Show Road E on map" }));
+    expect(screen.getByTestId("google-map-view")).toHaveAttribute("data-selected-gis-feature", "gis-E-0");
   });
 });

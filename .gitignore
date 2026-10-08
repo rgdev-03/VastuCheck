@@ -3,6 +3,9 @@
 __pycache__/
 *.py[cod]
 backend/db.sqlite3
+backend/db.sqlite3.backup
+data/raw/
+data/ballari-manifest.json
 backend/.env
 frontend/.env
 frontend/node_modules/
